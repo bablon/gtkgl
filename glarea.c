@@ -22,8 +22,12 @@ enum {
 	N_AXIS
 };
 
+#define Z_VALUE	2.0f
+#define Y_VALUE	0.0f
+#define X_VALUE	0.0f
+
 /* Rotation angles on each axis */
-static float rotation_angles[N_AXIS] = { 0.0 };
+static float rotation_angles[N_AXIS] = { X_VALUE, Y_VALUE, Z_VALUE };
 
 static float scale = 1.0f;
 static GtkAdjustment *adjs[N_AXIS];
@@ -167,6 +171,189 @@ out:
 		*mvp_out = mvp;
 }
 
+static void matrix_multiply(float *m1, float *m2)
+{
+	float res[16];
+	int i, j, rowbase, colbase;
+
+	rowbase = 0;
+	colbase = 0;
+
+	for (i = 0; i < 16; i++) {
+		res[i] = 0.0f;
+		if (i && i % 4 == 0) {
+			rowbase += 4;
+			colbase = 0;
+		}
+
+		for (j = 0; j < 4; j++)
+			res[i] += m1[rowbase + j] * m2[colbase +j * 4];
+
+		colbase +=  1;
+	}
+
+	for (i = 0; i < 16; i++)
+		m1[i] = res[i];
+}
+
+static void frustum(float *res, float left, float right, float bottom, float top,
+		    float near, float far)
+{
+	float width = (right - left) / 2;
+	float height = (top - bottom) / 2;
+
+	res[0] = near / width;
+	res[1] = 0.0f;
+	res[2] = (left + right) / width;
+	res[3] = 0.0f;
+
+	res[4] = 0.0f;
+	res[5] = near / height;
+	res[6] = (top + bottom) / height;
+	res[7] = 0.0f;
+
+	res[8] = 0.0f;
+	res[9] = 0.0f;
+	res[10] = - ((far + near) / (far - near));
+	res[11] = 2 * far * near / (far - near);
+
+	res[12] = 0.0f;
+	res[13] = 0.0f;
+	res[14] = -1.0f;
+	res[15] = 0.0f;
+}
+
+static void perspective(float *res, float angle, float aspect, float near, float far)
+{
+	float rads = G_PI_2 - angle * 0.5 * G_PI / 180.0f;
+	float tval = tanf(rads);
+
+	res[0] = tval / aspect;
+	res[1] = 0.0f;
+	res[2] = 0.0f;
+	res[3] = 0.0f;
+
+	res[4] = 0.0f;
+	res[5] = tval;
+	res[6] = 0.0f;
+	res[7] = 0.0f;
+
+	res[8] = 0.0f;
+	res[9] = 0.0f;
+	res[10] = (far + near) / (near - far);
+	res[11] = 2 * far * near / (near - far);
+
+	res[12] = 0.0f;
+	res[13] = 0.0f;
+	res[14] = -1.0f;
+	res[15] = 0.0f;
+}
+
+static void reverse(float *res)
+{
+	float mat[16];
+
+	mat[0] = res[0];
+	mat[1] = res[4];
+	mat[2] = res[8];
+	mat[3] = res[12];
+
+	mat[4] = res[1];
+	mat[5] = res[5];
+	mat[6] = res[9];
+	mat[7] = res[13];
+
+	mat[8] = res[2];
+	mat[9] = res[6];
+	mat[10] = res[10];
+	mat[11] = res[14];
+
+	mat[12] = res[3];
+	mat[13] = res[7];
+	mat[14] = res[11];
+	mat[15] = res[15];
+}
+
+static void identity(float *res)
+{
+	res[0] = 1.f; res[4] = 0.f;  res[8] = 0.f; res[12] = 0.f;
+	res[1] = 0.f; res[5] = 1.f;  res[9] = 0.f; res[13] = 0.f;
+	res[2] = 0.f; res[6] = 0.f; res[10] = 1.f; res[14] = 0.f;
+	res[3] = 0.f; res[7] = 0.f; res[11] = 0.f; res[15] = 1.f;
+}
+
+static void translate(float *res, float x, float y, float z)
+{
+	res[0] = 1.f; res[4] = 0.f;  res[8] = 0.f;  res[12] = 0.f;
+	res[1] = 0.f; res[5] = 1.f;  res[9] = 0.f;  res[13] = 0.f;
+	res[2] = 0.f; res[6] = 0.f;  res[10] = 1.f; res[14] = 0.f;
+	res[3] = x;   res[7] = y;    res[11] = z;   res[15] = 1.f;
+}
+
+static void
+compute_mvp(float *res, float phi, float theta, float psi)
+{
+	int i;
+	int width, height;
+	float projection[16];
+
+	float x = phi * (G_PI / 180.f);
+	float y = theta * (G_PI / 180.f);
+	float z = psi * (G_PI / 180.f);
+
+	float c1 = cosf (x), s1 = sinf (x);
+	float c2 = cosf (y), s2 = sinf (y);
+	float c3 = cosf (z), s3 = sinf (z);
+
+	float z_rotation_matrix[16] = {
+		c3, s3, 0, 0,
+		-s3, c3, 0, 0,
+		0, 0, 1, 0,
+		0, 0, 0, 1,
+	};
+	float y_rotation_matrix[16] = {
+		c2, 0, -s2, 0,
+		0, 1, 0, 0,
+		s2, 0, c2, 0,
+		0, 0, 0, 1,
+	};
+	float x_rotation_matrix[16] = {
+		1, 0, 0, 0,
+		0, c1, s1, 0,
+		0, -s1, c1, 0,
+		0, 0, 0, 1,
+	};
+	float scalling_matrix[16] = {
+		scale, 0, 0, 0,
+		0, scale, 0, 0,
+		0, 0, scale, 0,
+		0, 0, 0, 1,
+	};
+	float translate_matrix[16] = {
+		1, 0, 0, 0,
+		0, 1, 0, 0,
+		0, 0, 1, -rotation_angles[Z_AXIS],
+		0, 0, 0, 1,
+	};
+
+	identity(res);
+
+	width = gtk_widget_get_allocated_width(GTK_WIDGET(gl_area));
+	height = gtk_widget_get_allocated_height(GTK_WIDGET(gl_area));
+
+	perspective(projection, 45.0f, (float)width / (float)height, 0.1, 100);
+
+	matrix_multiply(res, projection);
+	matrix_multiply(res, translate_matrix);
+
+	//matrix_multiply(res, z_rotation_matrix);
+	matrix_multiply(res, y_rotation_matrix);
+	matrix_multiply(res, x_rotation_matrix);
+	matrix_multiply(res, scalling_matrix);
+
+	reverse(res);
+}
+#if 0
 static void
 compute_mvp(float *res, float phi, float theta, float psi)
 {
@@ -210,6 +397,7 @@ compute_mvp(float *res, float phi, float theta, float psi)
 	for (i = 0; i < 15; i++)
 		res[i] = res[i] * (float)scale;
 }
+#endif
 
 static GLuint position_buffer;
 static GLuint program;
@@ -362,7 +550,8 @@ input(GtkWidget *widget, GdkEvent *event, gpointer data)
 				z = motion->x;
 				base_flag = TRUE;
 			} else {
-				rotation_angles[Z_AXIS] += (motion->x - z);
+				rotation_angles[Z_AXIS] *= 8.0f;
+				rotation_angles[Z_AXIS] += motion->x - z;
 				while (rotation_angles[Z_AXIS] < 0)
 					rotation_angles[Z_AXIS] += 360.0f;
 				while (rotation_angles[Z_AXIS] > 360.0f)
@@ -388,6 +577,8 @@ on_axis_value_change(GtkAdjustment *adjustment, gpointer data)
 
 	/* Update the rotation angle */
 	rotation_angles[axis] = gtk_adjustment_get_value(adjustment);
+	if (axis == Z_AXIS)
+		rotation_angles[axis] /= 8.0f;
 
 	/* Update the contents of the GL drawing area */
 	gtk_widget_queue_draw(gl_area);
@@ -399,6 +590,7 @@ create_axis_slider(int axis)
 	GtkWidget *box, *label, *slider;
 	GtkAdjustment *adj;
 	const char *text;
+	float value;
 
 	box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 
@@ -416,11 +608,12 @@ create_axis_slider(int axis)
 		g_assert_not_reached ();
 	}
 
+	value = rotation_angles[axis];
 	label = gtk_label_new(text);
 	gtk_container_add(GTK_CONTAINER(box), label);
 	gtk_widget_show(label);
 
-	adj = gtk_adjustment_new(0.0, 0.0, 360.0, 1.0, 12.0, 0.0);
+	adj = gtk_adjustment_new(value, 0.0, 360.0, 1.0, 12.0, 0.0);
 	g_signal_connect(adj, "value-changed", G_CALLBACK(on_axis_value_change), GINT_TO_POINTER(axis));
 	slider = gtk_scale_new(GTK_ORIENTATION_HORIZONTAL, adj);
 	gtk_container_add(GTK_CONTAINER(box), slider);
